@@ -1,7 +1,7 @@
 """Scout: find players with a similar statistical profile - 2024/25, top-5 leagues + Champions League.
-Method: per-90 profile by position, standardised, cosine similarity (as in the 2015/16 scouting project here).
-Data: API-Football (2024/25 player season stats). The data file is private (API-Football forbids redistribution);
-the deployed app downloads it with a read-only token from Streamlit secrets. Run: streamlit run app.py"""
+Method: role-specific per-90 profile, standardised within position, cosine similarity.
+Data: API-Football 2024/25 season stats. The data file is private (API-Football forbids redistribution); the deployed
+app downloads it with a read-only token from Streamlit secrets. Run: streamlit run app.py"""
 import io
 from pathlib import Path
 
@@ -11,24 +11,36 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-LOCAL = Path(__file__).parent / "data" / "players_2425.parquet"
-PROFILE = {   # what each role is about, per 90 minutes
-    "GK": ["saves_p90", "conceded_p90", "passes_p90", "pass_accuracy", "rating"],
-    "DEF": ["tackles_p90", "interceptions_p90", "blocks_p90", "duels_p90", "duel_win_pct", "passes_p90", "pass_accuracy",
-            "key_passes_p90", "dribbles_p90", "shots_p90", "fouls_committed_p90"],
-    "MID": ["passes_p90", "pass_accuracy", "key_passes_p90", "tackles_p90", "interceptions_p90", "duels_p90",
-            "duel_win_pct", "dribbles_p90", "dribble_success_pct", "shots_p90", "goals_p90", "assists_p90"],
-    "FWD": ["shots_p90", "shots_on_p90", "goals_p90", "assists_p90", "key_passes_p90", "dribbles_p90",
-            "dribble_success_pct", "duels_p90", "duel_win_pct", "fouls_drawn_p90", "passes_p90"],
-}
-LABELS = {"saves_p90": "Saves", "conceded_p90": "Conceded", "passes_p90": "Passes", "pass_accuracy": "Pass acc.",
-          "rating": "Rating", "tackles_p90": "Tackles", "interceptions_p90": "Interceptions", "blocks_p90": "Blocks",
-          "duels_p90": "Duels", "duel_win_pct": "Duel win %", "key_passes_p90": "Key passes", "dribbles_p90": "Dribbles",
-          "dribble_success_pct": "Dribble success", "shots_p90": "Shots", "shots_on_p90": "Shots on target",
-          "goals_p90": "Goals", "assists_p90": "Assists", "fouls_drawn_p90": "Fouls drawn",
-          "fouls_committed_p90": "Fouls committed"}
+import ui
 
-st.set_page_config(page_title="Scout", page_icon="🔎", layout="wide")
+LOCAL = Path(__file__).parent / "data" / "players_2425.parquet"
+MIN_DEFAULT = 900
+# role-specific profiles; only stats the source fills for nearly every player (pass accuracy is missing for most)
+PROFILE = {
+    "GK": ["saves_p90", "conceded_p90", "passes_p90", "rating"],
+    "DEF": ["tackles_p90", "interceptions_p90", "blocks_p90", "duels_p90", "duel_win_pct", "passes_p90",
+            "key_passes_p90", "dribbles_p90", "shots_p90", "fouls_committed_p90"],
+    "MID": ["passes_p90", "key_passes_p90", "tackles_p90", "interceptions_p90", "duels_p90", "duel_win_pct",
+            "dribbles_p90", "dribble_success_pct", "shots_p90", "goals_p90", "assists_p90"],
+    "FWD": ["shots_p90", "shots_on_p90", "goals_p90", "assists_p90", "key_passes_p90", "dribbles_p90",
+            "dribble_success_pct", "duels_p90", "duel_win_pct", "fouls_drawn_p90"],
+}
+HEADLINE = {   # the 4 tiles on the player card
+    "GK": ["saves_p90", "conceded_p90", "passes_p90", "rating"],
+    "DEF": ["tackles_p90", "interceptions_p90", "duel_win_pct", "key_passes_p90"],
+    "MID": ["key_passes_p90", "passes_p90", "tackles_p90", "goals_p90"],
+    "FWD": ["goals_p90", "shots_p90", "key_passes_p90", "dribbles_p90"],
+}
+LOWER_IS_BETTER = {"conceded_p90", "fouls_committed_p90"}
+LABELS = {"saves_p90": "Saves /90", "conceded_p90": "Conceded /90", "passes_p90": "Passes /90", "rating": "Rating",
+          "tackles_p90": "Tackles /90", "interceptions_p90": "Interceptions /90", "blocks_p90": "Blocks /90",
+          "duels_p90": "Duels /90", "duel_win_pct": "Duel win %", "key_passes_p90": "Key passes /90",
+          "dribbles_p90": "Dribbles /90", "dribble_success_pct": "Dribble success", "shots_p90": "Shots /90",
+          "shots_on_p90": "On target /90", "goals_p90": "Goals /90", "assists_p90": "Assists /90",
+          "fouls_drawn_p90": "Fouls won /90", "fouls_committed_p90": "Fouls made /90"}
+POS_NAME = {"GK": "Goalkeeper", "DEF": "Defender", "MID": "Midfielder", "FWD": "Forward"}
+
+ui.setup("Scout", "🔎")
 
 
 @st.cache_data(ttl=6 * 3600)
@@ -42,69 +54,136 @@ def load():
     return pd.read_parquet(io.BytesIO(r.content))
 
 
-def similar(df, pid, n, filt):
-    me = df.loc[pid]
-    cols = PROFILE[me.group]
-    pool = df[df.group == me.group]
-    x = pool[cols].fillna(pool[cols].median())   # e.g. no dribbles -> no success rate: use the position's typical value
-    z = (x - x.mean()) / x.std().replace(0, 1)
+def fmt(col, v):
+    if pd.isna(v):
+        return "-"
+    return f"{v:.0%}" if col.endswith("_pct") else f"{v:.2f}"
+
+
+def profile_matrix(pool, group):
+    cols = PROFILE[group]
+    x = pool[pool.group == group][cols]
+    x = x.fillna(x.median()).fillna(0)          # e.g. no dribbles -> no success rate: use the position's typical value
+    return (x - x.mean()) / x.std().replace(0, 1).fillna(1)
+
+
+def similar(pool, pid, keep):
+    z = profile_matrix(pool, pool.at[pid, "group"])
     v = z.loc[pid]
     sim = ((z @ v) / (np.linalg.norm(z, axis=1) * np.linalg.norm(v) + 1e-9)).fillna(0)
-    out = pool.assign(similarity=sim).drop(pid)
-    return out[filt(out)].sort_values("similarity", ascending=False).head(n)
+    out = pool.loc[z.index].assign(similarity=sim).drop(pid)
+    return out[keep(out)].sort_values("similarity", ascending=False)
 
 
-def radar(df, ids, group):
+def percentiles(pool, group):
     cols = PROFILE[group]
-    pct = df[df.group == group][cols].rank(pct=True) * 100
-    fig = go.Figure()
-    for i, colour in zip(ids, ["#37003c", "#00b8a9"]):
-        r = pct.loc[i].tolist()
-        fig.add_trace(go.Scatterpolar(r=r + r[:1], theta=[LABELS[c] for c in cols] + [LABELS[cols[0]]], fill="toself",
-                                      name=df.at[i, "name"], line=dict(color=colour), opacity=0.6))
-    fig.update_layout(polar=dict(radialaxis=dict(range=[0, 100], ticksuffix="%")), height=480,
-                      margin=dict(l=40, r=40, t=40, b=40), legend=dict(orientation="h"))
-    return fig
+    g = pool[pool.group == group][cols]
+    pct = g.rank(pct=True) * 100
+    for c in LOWER_IS_BETTER & set(cols):
+        pct[c] = 100 - pct[c] + 100 / len(g)
+    return pct
 
 
 df = load().set_index("player_id")
-st.title("Scout")
-st.caption("Find players with a similar statistical profile. 2024/25 season, top-5 leagues + Champions League "
-           "(the newest season available free). Percentiles compare players in the same position.")
+df = df[df.group.notna()]
 
 with st.sidebar:
-    st.header("Filters")
-    min_minutes = st.slider("Minimum minutes", 300, 3000, 900, 100)
-    leagues = st.multiselect("Leagues", sorted(df.league.dropna().unique()), default=sorted(df.league.dropna().unique()))
-    max_age = st.slider("Maximum age", 17, 40, 40)
-    st.caption(f"{(df.minutes >= min_minutes).sum():,} players with {min_minutes}+ minutes")
-pool = df[(df.minutes >= min_minutes) & df.group.notna()]
+    st.markdown("### Filters")
+    min_minutes = st.slider("Minimum minutes played", 300, 3000, MIN_DEFAULT, 100,
+                            help="Per-90 numbers from a handful of games are mostly noise.")
+    leagues_all = sorted(df.league.dropna().unique())
+    leagues = st.multiselect("Show matches from", leagues_all, default=leagues_all)
+    max_age = st.slider("Maximum age (for suggestions)", 17, 40, 40)
+    st.markdown("<div class='note'>Data: API-Football, 2024/25. Top-5 leagues + Champions League.</div>",
+                unsafe_allow_html=True)
+pool = df[df.minutes >= min_minutes]
 
-tab_sim, tab_board = st.tabs(["Find similar players", "Leaderboards"])
+ui.hero("Scout", "Find players with the same statistical profile, anywhere in Europe's top five leagues. "
+                 "Pick a player and get his closest matches, younger or cheaper alternatives, and how he compares.",
+        tag="2024/25 season · Top-5 leagues + Champions League")
+ui.kpis([("Players", f"{len(pool):,}", f"with {min_minutes}+ minutes", "green"),
+         ("Clubs", f"{pool.team.nunique()}", "across 5 leagues", "blue"),
+         ("In the Champions League", f"{(pool.ucl_minutes > 0).sum():,}", "players with UCL minutes", "amber"),
+         ("Method", "Cosine", "on role-specific per-90 profiles", "")])
+
+tab_sim, tab_board, tab_how = st.tabs(["Find similar players", "Leaderboards", "How it works"])
+
 with tab_sim:
-    options = pool.sort_values("minutes", ascending=False)
-    label = options.name + " (" + options.team + ")"
-    pick = st.selectbox("Player", options.index, format_func=lambda i: label[i])
-    filt = lambda d: d.league.isin(leagues) & (d.age <= max_age)
-    top = similar(pool, pick, 10, filt)
+    order = pool.sort_values("minutes", ascending=False)
+    label = (order.name + " · " + order.team).to_dict()
+    default = order.index[order.name.eq("Mohamed Salah")]
+    pick = st.selectbox("Search a player", order.index, index=int(order.index.get_loc(default[0])) if len(default) else 0,
+                        format_func=lambda i: label[i])
     me = pool.loc[pick]
-    st.markdown(f"**{me['name']}**, {me.team} ({me.league}), {me.group}, age {me.age}: {int(me.minutes)} minutes"
-                + (f", {int(me.ucl_minutes)} in the Champions League" if me.ucl_minutes else "")
-                + (f", average rating {me.rating:.2f}" if pd.notna(me.rating) else ""))
-    show = top[["name", "team", "league", "age", "minutes", "rating", "similarity"]].copy()
-    show["similarity"] = show.similarity.map(lambda v: f"{v:.0%}")
-    st.dataframe(show.round(2), width="stretch", hide_index=True)
-    if len(top):
-        other = st.selectbox("Compare on the radar with", top.index, format_func=lambda i: label.get(i, df.at[i, "name"]))
-        st.plotly_chart(radar(pool, [pick, other], me.group), width="stretch")
+    pct = percentiles(pool, me.group)
+    tiles = [(LABELS[c], fmt(c, me[c]), pct.at[pick, c]) for c in HEADLINE[me.group]]
+    pills = "".join(f"<span class='pill'>{ui.esc(p)}</span>" for p in
+                    [POS_NAME[me.group], f"Age {int(me.age)}" if pd.notna(me.age) else None,
+                     f"{int(me.minutes):,} min", f"{int(me.ucl_minutes):,} UCL min" if me.ucl_minutes else None,
+                     f"Rating {me.rating:.2f}" if pd.notna(me.rating) else None] if p)
+    st.markdown(f"<div class='card pcard'><div class='name'>{ui.esc(me['name'])}</div>"
+                f"<div class='meta'>{ui.esc(me.team)} · {ui.esc(me.league)} · {ui.esc(me.nationality)}</div>{pills}"
+                f"{ui.stat_tiles(tiles)}</div>", unsafe_allow_html=True)
+
+    st.markdown("### Most similar players")
+    keep = lambda d: d.league.isin(leagues) & (d.age <= max_age)
+    sims = similar(pool, pick, keep)
+    top = sims.head(9)
+    if top.empty:
+        st.info("Nobody matches these filters. Widen the leagues or the age limit.")
+    else:
+        cards = []
+        for i, r in top.iterrows():
+            k1, k2 = HEADLINE[me.group][:2]
+            cards.append(f"<div class='sim'><span class='pct'>{r.similarity:.0%}</span><div class='n'>{ui.esc(r['name'])}</div>"
+                         f"<div class='c'>{ui.esc(r.team)} · age {int(r.age) if pd.notna(r.age) else '-'}</div>"
+                         f"<div class='bar'><span style='width:{max(r.similarity, 0) * 100:.0f}%;background:{ui.GREEN}'></span></div>"
+                         f"<div class='c' style='margin-top:6px'>{LABELS[k1]} {fmt(k1, r[k1])} · {LABELS[k2]} {fmt(k2, r[k2])}</div></div>")
+        st.markdown(f"<div class='simgrid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+        st.markdown("### Side by side")
+        other = st.selectbox("Compare with", top.index, format_func=lambda i: label.get(i, df.at[i, "name"]))
+        cols = PROFILE[me.group]
+        theta = [LABELS[c] for c in cols] + [LABELS[cols[0]]]
+        fig = go.Figure()
+        for i, colour in ((pick, ui.GREEN), (other, ui.AMBER)):
+            r = pct.loc[i, cols].tolist()
+            fig.add_trace(go.Scatterpolar(r=r + r[:1], theta=theta, fill="toself", name=df.at[i, "name"],
+                                          line=dict(color=colour, width=2), opacity=0.55,
+                                          hovertemplate="%{theta}: %{r:.0f}th percentile<extra>" + df.at[i, "name"] + "</extra>"))
+        fig.update_layout(height=520, margin=dict(l=60, r=60, t=30, b=30), legend=dict(orientation="h", y=-0.08),
+                          polar=dict(bgcolor="rgba(0,0,0,0)", radialaxis=dict(range=[0, 100], gridcolor=ui.LINE,
+                                     tickfont=dict(color=ui.MUTED, size=10)), angularaxis=dict(gridcolor=ui.LINE)))
+        st.plotly_chart(fig, width="stretch")
+        st.caption("Percentiles among players in the same position with the minimum minutes. "
+                   "For 'conceded' and 'fouls made', higher percentile = fewer.")
 
 with tab_board:
     c1, c2 = st.columns(2)
-    group = c1.selectbox("Position", ["FWD", "MID", "DEF", "GK"])
+    group = c1.segmented_control("Position", ["FWD", "MID", "DEF", "GK"], default="FWD",
+                                 format_func=lambda g: POS_NAME[g]) or "FWD"
     stat = c2.selectbox("Stat", PROFILE[group], format_func=lambda c: LABELS[c])
-    board = pool[(pool.group == group) & pool.league.isin(leagues) & (pool.age <= max_age)]
-    board = board.sort_values(stat, ascending=stat in ("conceded_p90", "fouls_committed_p90")).head(25)
-    st.dataframe(board[["name", "team", "league", "age", "minutes", stat]].round(2), width="stretch", hide_index=True)
+    board = pool[(pool.group == group) & pool.league.isin(leagues) & (pool.age <= max_age)].dropna(subset=[stat])
+    board = board.sort_values(stat, ascending=stat in LOWER_IS_BETTER).head(15)
+    fig = go.Figure(go.Bar(x=board[stat], y=board.name + "  ·  " + board.team, orientation="h",
+                           marker=dict(color=ui.GREEN), text=[fmt(stat, v) for v in board[stat]], textposition="outside",
+                           hovertemplate="%{y}<br>" + LABELS[stat] + ": %{x:.2f}<extra></extra>"))
+    fig.update_layout(height=40 * len(board) + 80, margin=dict(l=10, r=40, t=10, b=10),
+                      yaxis=dict(autorange="reversed"), xaxis=dict(title=LABELS[stat]))
+    st.plotly_chart(fig, width="stretch")
 
-st.divider()
-st.caption("Data: API-Football (2024/25). Method: standardised per-90 profiles and cosine similarity within position.")
+with tab_how:
+    st.markdown("""
+#### How "similar" is measured
+1. **Profile:** each player is described by the per-90-minute stats that matter for his position
+   (a centre-back is about tackles, interceptions and duels; a forward about shots, goals, dribbles).
+2. **Standardise:** every stat is converted to "how far above or below the typical player in that position",
+   so passes (dozens per game) don't drown out goals (fractions per game).
+3. **Compare shapes:** cosine similarity compares the *shape* of two profiles, not the volume. A player with
+   the same mix of actions scores high even if he played fewer minutes.
+
+#### Good to know
+- 2024/25 is the newest season available free (API-Football's free plan covers 2022-2024).
+- Transferred players' seasons are shown once, at the club they actually played for.
+- The 2015/16 deep dive (event data, unsupervised roles, team styles) lives in this repository's `scouting/` folder.
+""")
