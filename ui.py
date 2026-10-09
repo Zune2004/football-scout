@@ -80,7 +80,7 @@ def hero(title, subtitle, tag=None):
 def kpis(items):
     """items: [(label, value, sub, tone)] with tone in green/amber/rose/blue/''."""
     cards = "".join(f"<div class='kpi {tone}'><div class='label'>{esc(l)}</div>"
-                    f"<div class='value{' word' if any(c.isalpha() for c in str(v)) and len(str(v)) > 8 else ''}'>{esc(v)}</div>"
+                    f"<div class='value{' word' if any(c.isalpha() for c in str(v)) else ''}'>{esc(v)}</div>"
                     f"<div class='sub'>{esc(s)}</div></div>" for l, v, s, tone in items)
     st.markdown(f"<div class='kpis'>{cards}</div>", unsafe_allow_html=True)
 

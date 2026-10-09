@@ -2,7 +2,16 @@
 
 Find footballers with a similar statistical profile. The idea is scouting by numbers: "who plays like Hakimi, but younger?"
 
-**Interactive app (2024/25, top-5 leagues + Champions League):** pick a player and get the 10 most similar players in the same position, with a percentile radar comparison. You can filter by league, age and minutes. There are also per-90 leaderboards. Run it with `streamlit run app.py`; it's deployed on Streamlit Community Cloud.
+### ▶ [Open the live app: football-scout-labs.streamlit.app](https://football-scout-labs.streamlit.app/)
+
+Pick any player from the 2024/25 top-5 leagues or the Champions League:
+- **Player card:** his percentiles.
+- **Most similar players:** across Europe. You choose what matters (attacking, carrying the ball, defending), and can filter by league and age.
+- **Head-to-head:** compare him with anyone else.
+
+![Similar players](assets/similar.png)
+
+![Compare two players](assets/compare.png)
 
 ## How it works
 
