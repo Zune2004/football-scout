@@ -123,9 +123,11 @@ tab_sim, tab_cmp, tab_board, tab_how = st.tabs(["Find similar players", "Compare
 with tab_sim:
     order = pool.sort_values("minutes", ascending=False)
     label = (order.name + " · " + order.team).to_dict()
-    default = order.index[order.name.eq("Mohamed Salah")]
-    pick = st.selectbox("Search a player", order.index, index=int(order.index.get_loc(default[0])) if len(default) else 0,
+    wanted = st.query_params.get("player")   # shareable links: ?player=<id>
+    default = [int(wanted)] if wanted and wanted.isdigit() and int(wanted) in order.index else         list(order.index[order.name.eq("Mohamed Salah")])
+    pick = st.selectbox("Search a player", order.index, index=int(order.index.get_loc(default[0])) if default else 0,
                         format_func=lambda i: label[i])
+    st.query_params["player"] = str(pick)
     me = pool.loc[pick]
     pct = percentiles(pool, me.group)
     tiles = [(LABELS[c], fmt(c, me[c]), pct.at[pick, c]) for c in HEADLINE[me.group]]
