@@ -1,0 +1,20 @@
+# Every push: install the exact requirements Streamlit Cloud installs, then load the app and click through it.
+# Catches version clashes (e.g. streamlit vs pandas pins) and broken pages before they reach the live app.
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install exactly what Streamlit Cloud installs
+        run: pip install -r requirements.txt && pip check
+      - name: Smoke test
+        run: python tests/smoke_test.py
