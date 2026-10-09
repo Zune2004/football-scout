@@ -16,7 +16,7 @@ Pick any player from the 2024/25 top-5 leagues or the Champions League:
 ## How it works
 
 - **Profile:** each player is described by role-specific **per-90-minute** stats, for example:
-  - full-backs and centre-backs: tackles, interceptions, duels and win %, passing volume and accuracy, key passes, dribbles;
+  - full-backs and centre-backs: tackles, interceptions, duels and win %, passing volume, key passes, dribbles (pass accuracy is left out: the source is missing it for most players);
   - forwards: shots, shots on target, goals, assists, dribbles and success rate, duels, fouls drawn.
 - **Comparison:** stats are **standardised within the position**, and players are compared by **cosine similarity**, which measures the *shape* of the profile rather than raw volume.
 - **Sample results:**
