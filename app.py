@@ -32,6 +32,13 @@ HEADLINE = {   # the 4 tiles on the player card
     "FWD": ["goals_p90", "shots_p90", "key_passes_p90", "dribbles_p90"],
 }
 LOWER_IS_BETTER = {"conceded_p90", "fouls_committed_p90"}
+FAMILY = {   # for the "what matters to you" weights
+    "Attacking": ["shots_p90", "shots_on_p90", "goals_p90", "assists_p90", "key_passes_p90"],
+    "Carrying the ball": ["dribbles_p90", "dribble_success_pct", "fouls_drawn_p90"],
+    "Defending": ["tackles_p90", "interceptions_p90", "blocks_p90", "duels_p90", "duel_win_pct", "fouls_committed_p90"],
+    "Passing": ["passes_p90"],
+    "Goalkeeping": ["saves_p90", "conceded_p90", "rating"],
+}
 LABELS = {"saves_p90": "Saves /90", "conceded_p90": "Conceded /90", "passes_p90": "Passes /90", "rating": "Rating",
           "tackles_p90": "Tackles /90", "interceptions_p90": "Interceptions /90", "blocks_p90": "Blocks /90",
           "duels_p90": "Duels /90", "duel_win_pct": "Duel win %", "key_passes_p90": "Key passes /90",
@@ -67,8 +74,12 @@ def profile_matrix(pool, group):
     return (x - x.mean()) / x.std().replace(0, 1).fillna(1)
 
 
-def similar(pool, pid, keep):
+def similar(pool, pid, keep, weights=None):
     z = profile_matrix(pool, pool.at[pid, "group"])
+    if weights:   # scale each family's columns: 0 = ignore, 2 = counts double
+        for fam, w in weights.items():
+            cols = [c for c in FAMILY[fam] if c in z.columns]
+            z[cols] = z[cols] * w
     v = z.loc[pid]
     sim = ((z @ v) / (np.linalg.norm(z, axis=1) * np.linalg.norm(v) + 1e-9)).fillna(0)
     out = pool.loc[z.index].assign(similarity=sim).drop(pid)
@@ -106,7 +117,8 @@ ui.kpis([("Players", f"{len(pool):,}", f"with {min_minutes}+ minutes", "green"),
          ("In the Champions League", f"{(pool.ucl_minutes > 0).sum():,}", "players with UCL minutes", "amber"),
          ("Method", "Cosine", "on role-specific per-90 profiles", "")])
 
-tab_sim, tab_board, tab_how = st.tabs(["Find similar players", "Leaderboards", "How it works"])
+tab_sim, tab_cmp, tab_board, tab_how = st.tabs(["Find similar players", "Compare two players", "Leaderboards",
+                                                "How it works"])
 
 with tab_sim:
     order = pool.sort_values("minutes", ascending=False)
@@ -126,8 +138,14 @@ with tab_sim:
                 f"{ui.stat_tiles(tiles)}</div>", unsafe_allow_html=True)
 
     st.markdown("### Most similar players")
+    fams = [f for f in FAMILY if set(FAMILY[f]) & set(PROFILE[me.group])]
+    with st.expander("What matters most to you? Weight the similarity"):
+        cols_w = st.columns(len(fams))
+        weights = {f: c.select_slider(f, options=[0.0, 0.5, 1.0, 1.5, 2.0], value=1.0,
+                                      format_func=lambda v: {0.0: "ignore", 0.5: "less", 1.0: "normal", 1.5: "more", 2.0: "double"}[v])
+                   for f, c in zip(fams, cols_w)}
     keep = lambda d: d.league.isin(leagues) & (d.age <= max_age)
-    sims = similar(pool, pick, keep)
+    sims = similar(pool, pick, keep, weights)
     top = sims.head(9)
     if top.empty:
         st.info("Nobody matches these filters. Widen the leagues or the age limit.")
@@ -157,6 +175,34 @@ with tab_sim:
         st.plotly_chart(fig, width="stretch")
         st.caption("Percentiles among players in the same position with the minimum minutes. "
                    "For 'conceded' and 'fouls made', higher percentile = fewer.")
+
+with tab_cmp:
+    allp = pool.sort_values("minutes", ascending=False)
+    lab = (allp.name + " · " + allp.team).to_dict()
+    c1, c2 = st.columns(2)
+    a = c1.selectbox("Player A", allp.index, index=int(allp.index.get_loc(pick)), format_func=lambda i: lab[i], key="cmp_a")
+    same = allp[allp.group == allp.at[a, "group"]]
+    b = c2.selectbox("Player B (same position)", [i for i in same.index if i != a], format_func=lambda i: lab[i], key="cmp_b")
+    g = allp.at[a, "group"]
+    cols = PROFILE[g]
+    pct_c = percentiles(pool, g)
+    theta = [LABELS[c] for c in cols] + [LABELS[cols[0]]]
+    fig = go.Figure()
+    for i, colour in ((a, ui.GREEN), (b, ui.AMBER)):
+        r = pct_c.loc[i, cols].tolist()
+        fig.add_trace(go.Scatterpolar(r=r + r[:1], theta=theta, fill="toself", name=allp.at[i, "name"],
+                                      line=dict(color=colour, width=2), opacity=0.55))
+    fig.update_layout(height=520, margin=dict(l=60, r=60, t=30, b=30), legend=dict(orientation="h", y=-0.08),
+                      polar=dict(bgcolor="rgba(0,0,0,0)", radialaxis=dict(range=[0, 100], gridcolor=ui.LINE,
+                                 tickfont=dict(color=ui.MUTED, size=10)), angularaxis=dict(gridcolor=ui.LINE)))
+    st.plotly_chart(fig, width="stretch")
+    rows = []
+    for c in cols:
+        va, vb = allp.at[a, c], allp.at[b, c]
+        better = "" if pd.isna(va) or pd.isna(vb) or va == vb else (
+            allp.at[a, "name"] if (va < vb) == (c in LOWER_IS_BETTER) else allp.at[b, "name"])
+        rows.append({"stat": LABELS[c], allp.at[a, "name"]: fmt(c, va), allp.at[b, "name"]: fmt(c, vb), "better": better})
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 with tab_board:
     c1, c2 = st.columns(2)
