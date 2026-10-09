@@ -117,8 +117,8 @@ ui.kpis([("Players", f"{len(pool):,}", f"with {min_minutes}+ minutes", "green"),
          ("In the Champions League", f"{(pool.ucl_minutes > 0).sum():,}", "players with UCL minutes", "amber"),
          ("Method", "Cosine", "on role-specific per-90 profiles", "")])
 
-tab_sim, tab_cmp, tab_board, tab_how = st.tabs(["Find similar players", "Compare two players", "Leaderboards",
-                                                "How it works"])
+tab_sim, tab_talent, tab_cmp, tab_board, tab_how = st.tabs(["Find similar players", "Talent finder", "Compare two players",
+                                                            "Leaderboards", "How it works"])
 
 with tab_sim:
     order = pool.sort_values("minutes", ascending=False)
@@ -177,6 +177,32 @@ with tab_sim:
         st.plotly_chart(fig, width="stretch")
         st.caption("Percentiles among players in the same position with the minimum minutes. "
                    "For 'conceded' and 'fouls made', higher percentile = fewer.")
+
+with tab_talent:
+    c1, c2, c3 = st.columns(3)
+    tg = c1.segmented_control("Position", ["FWD", "MID", "DEF", "GK"], default="MID", key="tal_pos",
+                              format_func=lambda g: POS_NAME[g]) or "MID"
+    band = c2.segmented_control("Age", ["Under 21", "Under 23", "Under 25", "Any"], default="Under 23", key="tal_age") or "Any"
+    rank_by = c3.selectbox("Rank by", ["Overall profile"] + PROFILE[tg], key="tal_rank",
+                           format_func=lambda c: c if c == "Overall profile" else LABELS[c])
+    limit = {"Under 21": 21, "Under 23": 23, "Under 25": 25, "Any": 99}[band]
+    pct_t = percentiles(pool, tg)
+    cand = pool[(pool.group == tg) & (pool.age < limit) & pool.league.isin(leagues)].copy()
+    cand["score"] = pct_t.loc[cand.index].mean(axis=1) if rank_by == "Overall profile" else pct_t.loc[cand.index, rank_by]
+    cand = cand.sort_values("score", ascending=False).head(12)
+    if cand.empty:
+        st.info("Nobody matches. Try a wider age band, more leagues or fewer minimum minutes.")
+    else:
+        st.caption(f"{band} {POS_NAME[tg].lower()}s with {min_minutes}+ minutes, ranked by "
+                   f"{'their average percentile across the position profile' if rank_by == 'Overall profile' else LABELS[rank_by]}.")
+        cards = []
+        for i, r in cand.iterrows():
+            best = pct_t.loc[i].sort_values(ascending=False).index[:2]
+            cards.append(f"<div class='sim'><span class='pct'>{r.score:.0f}</span><div class='n'>{ui.esc(r['name'])}</div>"
+                         f"<div class='c'>{ui.esc(r.team)} · {ui.esc(r.league)} · age {int(r.age)}</div>"
+                         f"<div class='bar'><span style='width:{r.score:.0f}%;background:{ui.pct_colour(r.score)}'></span></div>"
+                         f"<div class='c' style='margin-top:6px'>Best at: {LABELS[best[0]]}, {LABELS[best[1]]}</div></div>")
+        st.markdown(f"<div class='simgrid'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 with tab_cmp:
     allp = pool.sort_values("minutes", ascending=False)
