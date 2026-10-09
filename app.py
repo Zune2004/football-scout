@@ -86,6 +86,33 @@ def similar(pool, pid, keep, weights=None):
     return out[keep(out)].sort_values("similarity", ascending=False)
 
 
+def card_png(me, pct_row, cols):
+    """Shareable PNG of the player card: every profile stat with its percentile bar."""
+    from PIL import Image, ImageDraw, ImageFont   # pillow ships with streamlit
+    font = lambda n: ImageFont.load_default(n)
+    w, h = 900, 230 + 62 * len(cols)
+    img = Image.new("RGB", (w, h), ui.BG)
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((20, 20, w - 20, h - 20), 18, fill=ui.CARD, outline=ui.LINE, width=2)
+    d.text((50, 45), me["name"], font=font(44), fill=ui.TEXT)
+    age = f" · age {int(me.age)}" if pd.notna(me.age) else ""
+    d.text((50, 105), f"{POS_NAME[me.group]} · {me.team} · {me.league}{age} · {int(me.minutes):,} min",
+           font=font(22), fill=ui.MUTED)
+    d.text((50, 140), "2024/25 percentiles vs players in the same position", font=font(18), fill=ui.MUTED)
+    for k, c in enumerate(cols):
+        y = 190 + 62 * k
+        v = pct_row[c]
+        d.text((50, y), LABELS[c], font=font(22), fill=ui.TEXT)
+        d.text((w - 60, y), fmt(c, me[c]), font=font(22), fill=ui.TEXT, anchor="ra")
+        d.rounded_rectangle((50, y + 32, w - 60, y + 42), 5, fill=ui.LINE)
+        if pd.notna(v):
+            d.rounded_rectangle((50, y + 32, 50 + (w - 110) * v / 100, y + 42), 5, fill=ui.pct_colour(v))
+    d.text((w - 50, h - 50), "football-scout-labs.streamlit.app", font=font(16), fill=ui.MUTED, anchor="ra")
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
 def percentiles(pool, group):
     cols = PROFILE[group]
     g = pool[pool.group == group][cols]
@@ -138,6 +165,8 @@ with tab_sim:
     st.markdown(f"<div class='card pcard'><div class='name'>{ui.esc(me['name'])}</div>"
                 f"<div class='meta'>{ui.esc(me.team)} · {ui.esc(me.league)} · {ui.esc(me.nationality)}</div>{pills}"
                 f"{ui.stat_tiles(tiles)}</div>", unsafe_allow_html=True)
+    st.download_button("Download player card (PNG)", card_png(me, pct.loc[pick], PROFILE[me.group]),
+                       file_name=f"{me['name'].replace(' ', '_')}_scout.png", mime="image/png")
 
     st.markdown("### Most similar players")
     fams = [f for f in FAMILY if set(FAMILY[f]) & set(PROFILE[me.group])]
